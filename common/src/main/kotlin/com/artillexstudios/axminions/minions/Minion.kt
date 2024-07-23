@@ -1,16 +1,16 @@
 package com.artillexstudios.axminions.minions
 
-import com.artillexstudios.axapi.entity.PacketEntityFactory
-import com.artillexstudios.axapi.entity.impl.PacketArmorStand
-import com.artillexstudios.axapi.entity.impl.PacketEntity
 import com.artillexstudios.axapi.events.PacketEntityInteractEvent
 import com.artillexstudios.axapi.hologram.Hologram
 import com.artillexstudios.axapi.hologram.HologramLine
+import com.artillexstudios.axapi.items.WrappedItemStack
+import com.artillexstudios.axapi.nms.NMSHandlers
+import com.artillexstudios.axapi.packetentity.PacketEntity
+import com.artillexstudios.axapi.packetentity.meta.entity.ArmorStandMeta
+import com.artillexstudios.axapi.packetentity.meta.serializer.Accessors
 import com.artillexstudios.axapi.scheduler.Scheduler
-import com.artillexstudios.axapi.serializers.Serializers
 import com.artillexstudios.axapi.utils.EquipmentSlot
 import com.artillexstudios.axapi.utils.ItemBuilder
-import com.artillexstudios.axapi.utils.RotationType
 import com.artillexstudios.axapi.utils.StringUtils
 import com.artillexstudios.axminions.AxMinionsPlugin
 import com.artillexstudios.axminions.api.AxMinionsAPI
@@ -27,10 +27,6 @@ import com.artillexstudios.axminions.api.utils.fastFor
 import com.artillexstudios.axminions.api.warnings.Warning
 import com.artillexstudios.axminions.api.warnings.Warnings
 import com.artillexstudios.axminions.listeners.LinkingListener
-import java.text.NumberFormat
-import java.util.Locale
-import java.util.UUID
-import java.util.concurrent.atomic.AtomicBoolean
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder
 import org.bukkit.Bukkit
 import org.bukkit.Location
@@ -40,12 +36,16 @@ import org.bukkit.block.Container
 import org.bukkit.enchantments.Enchantment
 import org.bukkit.entity.EntityType
 import org.bukkit.entity.Player
+import org.bukkit.entity.Pose
 import org.bukkit.inventory.Inventory
 import org.bukkit.inventory.ItemStack
 import org.bukkit.inventory.meta.Damageable
 import org.bukkit.inventory.meta.ItemMeta
 import org.bukkit.persistence.PersistentDataType
 import org.bukkit.util.EulerAngle
+import java.text.NumberFormat
+import java.util.*
+import java.util.concurrent.atomic.AtomicBoolean
 
 class Minion(
     private var location: Location,
@@ -75,7 +75,7 @@ class Minion(
         }
     }
 
-    private lateinit var entity: PacketArmorStand
+    private lateinit var entity: PacketEntity
     private var nextAction = 0
     private var range = 0.0
 
@@ -92,8 +92,9 @@ class Minion(
     @Volatile
     private var ticking = false
     private var debugHologram: Hologram? = null
-    private val broken = AtomicBoolean(false)
+    val broken = AtomicBoolean(false)
     private var ownerOnline = false
+    private var unbreakable = false
 
     init {
         spawn()
@@ -107,14 +108,16 @@ class Minion(
     override fun spawn() {
         location.x += 0.5
         location.z += 0.5
-        entity = PacketEntityFactory.get().spawnEntity(location, EntityType.ARMOR_STAND) as PacketArmorStand
-        entity.setHasBasePlate(false)
-        entity.setSmall(true)
-        entity.setHasArms(true)
+        entity = NMSHandlers.getNmsHandler().createEntity(EntityType.ARMOR_STAND, location)
+        val meta = entity.meta() as ArmorStandMeta
 
-        entity.onClick { event ->
+        meta.setNoBasePlate(true)
+        meta.small(true)
+        meta.showArms(true)
+
+        entity.onInteract { event ->
             if (broken.get()) {
-                return@onClick
+                return@onInteract
             }
 
             // We want to do this, so we don't accidentally cause dupes...
@@ -123,10 +126,10 @@ class Minion(
                 broken.set(true)
             }
 
-            Scheduler.get().runAt(location) {
+            Scheduler.get().runAt(location) { task ->
                 val canBuildAt = AxMinionsPlugin.integrations.getProtectionIntegration().canBuildAt(
                     event.player,
-                    event.packetEntity.location
+                    event.packetEntity.location()
                 )
 
                 if (event.isAttack) {
@@ -147,20 +150,25 @@ class Minion(
             }
         }
 
-        entity.name = StringUtils.format(
-            type.getConfig().get("entity.name"),
-            Placeholder.unparsed("owner", owner.name ?: "???"),
-            Placeholder.unparsed("level", level.toString()),
-            Placeholder.parsed("level_color", Messages.LEVEL_COLOR(level))
+        meta.name(
+            StringUtils.format(
+                type.getConfig().get("entity.name"),
+                Placeholder.unparsed("owner", owner.name ?: "???"),
+                Placeholder.unparsed("level", level.toString()),
+                Placeholder.parsed("level_color", Messages.LEVEL_COLOR(level))
+            )
         )
+        meta.customNameVisible(true)
 
         if (Config.DEBUG()) {
             debugHologram = Hologram(location.clone().add(0.0, 2.0, 0.0), "$locationID")
             debugHologram?.addLine("ticking: $ticking", HologramLine.Type.TEXT)
         }
 
+        meta.metadata().set(Accessors.POSE, Pose.STANDING)
         setDirection(direction, false)
         updateArmour()
+        entity.spawn()
     }
 
     private fun breakMinion(event: PacketEntityInteractEvent) {
@@ -240,6 +248,13 @@ class Minion(
                         else -> (this.level + 1).toString()
                     }
                 )
+                val nextStorage = Placeholder.parsed(
+                    "next_storage",
+                    if (type.hasReachedMaxLevel(this)) Messages.UPGRADES_MAX_LEVEL_REACHED() else type.getDouble(
+                        "storage",
+                        this.level + 1
+                    ).toString()
+                )
                 val range = Placeholder.parsed("range", type.getDouble("range", this.level).toString())
                 val nextRange = Placeholder.parsed(
                     "next_range",
@@ -305,7 +320,8 @@ class Minion(
                     stored,
                     actions,
                     multiplier,
-                    nextMultiplier
+                    nextMultiplier,
+                    nextStorage
                 ).get()
 
                 val meta = item.itemMeta!!
@@ -316,7 +332,10 @@ class Minion(
             } else if (it.equals("charge")) {
                 if (Config.CHARGE_ENABLED()) {
                     val charge = Placeholder.parsed("charge", TimeUtils.format(charge - System.currentTimeMillis()))
-                    item = ItemBuilder(AxMinionsAPI.INSTANCE.getConfig().getConfig().getSection("gui.items.$it"), charge).get()
+                    item = ItemBuilder(
+                        AxMinionsAPI.INSTANCE.getConfig().getConfig().getSection("gui.items.$it"),
+                        charge
+                    ).get()
 
                     val meta = item.itemMeta!!
                     meta.persistentDataContainer.set(Keys.GUI, PersistentDataType.STRING, it)
@@ -329,7 +348,9 @@ class Minion(
                 val linked = Placeholder.unparsed(
                     "linked", when (linkedChest) {
                         null -> "---"
-                        else -> Serializers.LOCATION.serialize(linkedChest)
+                        else -> Messages.LOCATION_FORMAT().replace("<world>", location.world!!.name)
+                            .replace("<x>", location.blockX.toString()).replace("<y>", location.blockY.toString())
+                            .replace("<z>", location.blockZ.toString())
                     }
                 )
                 item = ItemBuilder(
@@ -424,8 +445,10 @@ class Minion(
 
         if (this.tool?.type == Material.AIR) {
             entity.setItem(EquipmentSlot.MAIN_HAND, null)
+            unbreakable = false
         } else {
-            entity.setItem(EquipmentSlot.MAIN_HAND, tool.clone())
+            entity.setItem(EquipmentSlot.MAIN_HAND, WrappedItemStack.wrap(tool.clone()))
+            unbreakable = notDurable.contains(tool.type)
         }
 
         if (save) {
@@ -448,11 +471,14 @@ class Minion(
         updateArmour()
         updateInventories()
 
-        entity.name = StringUtils.format(
-            type.getConfig().get("entity.name"),
-            Placeholder.unparsed("owner", owner.name ?: "???"),
-            Placeholder.unparsed("level", level.toString()),
-            Placeholder.parsed("level_color", Messages.LEVEL_COLOR(level))
+        val meta = entity.meta()
+        meta.name(
+            StringUtils.format(
+                type.getConfig().get("entity.name"),
+                Placeholder.unparsed("owner", owner.name ?: "???"),
+                Placeholder.unparsed("level", level.toString()),
+                Placeholder.parsed("level_color", Messages.LEVEL_COLOR(level))
+            )
         )
 
         AxMinionsPlugin.dataQueue.submit {
@@ -491,7 +517,8 @@ class Minion(
     override fun animate() {
         if (armTick >= 2) return
 
-        entity.setRotation(RotationType.RIGHT_ARM, EulerAngle(-2 + armTick, 0.0, 0.0))
+        val meta = entity.meta() as ArmorStandMeta
+        meta.metadata().set(Accessors.RIGHT_ARM_ROTATION, EulerAngle(-2 + armTick, 0.0, 0.0))
         armTick += 0.2
     }
 
@@ -539,6 +566,13 @@ class Minion(
 
         AxMinionsPlugin.dataQueue.submit {
             AxMinionsPlugin.dataHandler.deleteMinion(this)
+
+            if (AxMinionsAPI.INSTANCE.getIntegrations().getIslandIntegration() != null) {
+                val islandId = AxMinionsAPI.INSTANCE.getIntegrations().getIslandIntegration()!!.getIslandAt(location)
+                if (islandId.isNotBlank()) {
+                    AxMinionsPlugin.dataHandler.islandBreak(islandId)
+                }
+            }
         }
     }
 
@@ -575,25 +609,25 @@ class Minion(
 
     override fun updateArmour() {
         for (entry in EquipmentSlot.entries) {
-            entity.setItem(entry, null)
+            entity.setItem(entry,  null)
         }
 
         setTool(this.tool ?: ItemStack(Material.AIR), false)
 
         type.getSection("items.helmet", level)?.let {
-            entity.setItem(EquipmentSlot.HELMET, ItemBuilder(it).get())
+            entity.setItem(EquipmentSlot.HELMET, WrappedItemStack.wrap(ItemBuilder(it).get()))
         }
 
         type.getSection("items.chestplate", level)?.let {
-            entity.setItem(EquipmentSlot.CHEST_PLATE, ItemBuilder(it).get())
+            entity.setItem(EquipmentSlot.CHEST_PLATE, WrappedItemStack.wrap(ItemBuilder(it).get()))
         }
 
         type.getSection("items.leggings", level)?.let {
-            entity.setItem(EquipmentSlot.LEGGINGS, ItemBuilder(it).get())
+            entity.setItem(EquipmentSlot.LEGGINGS, WrappedItemStack.wrap(ItemBuilder(it).get()))
         }
 
         type.getSection("items.boots", level)?.let {
-            entity.setItem(EquipmentSlot.BOOTS, ItemBuilder(it).get())
+            entity.setItem(EquipmentSlot.BOOTS, WrappedItemStack.wrap(ItemBuilder(it).get()))
         }
     }
 
@@ -619,7 +653,7 @@ class Minion(
         if (linkedChest == null) return
 
         if (ticking) {
-            Scheduler.get().runAt(linkedChest) {
+            Scheduler.get().executeAt(linkedChest) {
                 if (linkedChest!!.world!!.isChunkLoaded(linkedChest!!.blockX shr 4, linkedChest!!.blockZ shr 4)) {
                     linkedInventory = (linkedChest?.block?.state as? Container)?.inventory
                 }
@@ -641,113 +675,157 @@ class Minion(
         dirty = true
     }
 
+
     override fun damageTool(amount: Int) {
         if (!Config.USE_DURABILITY()) return
+        val tool = tool ?: return
+        val toolMeta = toolMeta as? Damageable ?: return
 
-        if (notDurable.contains(tool?.type) && !(tool?.type?.isAir ?: return)) {
+        if (!tool.type.isAir && unbreakable) {
             return
         }
 
-        val meta = toolMeta as? Damageable ?: return
+        if (toolMeta.isUnbreakable) {
+            return
+        }
 
-        if (toolMeta?.isUnbreakable == true) return
+        val maxDurability = tool.type.maxDurability
+        val damage = toolMeta.damage
+        val remaining = maxDurability - damage
 
-        if (Math.random() > 1f / (meta.getEnchantLevel(Enchantment.DURABILITY) + 1)) return
+        if (Math.random() > 1f / (toolMeta.getEnchantLevel(Enchantment.DURABILITY) + 1)) return
 
-        if ((tool?.type?.maxDurability ?: return) <= meta.damage + amount) {
+        if (remaining > amount) {
+            // We can damage the tool
+            toolMeta.damage += amount
+            tool.itemMeta = toolMeta
+            updateInventories()
+            return
+        } else {
+            // Tool is breaking
             if (Config.CAN_BREAK_TOOLS()) {
                 if (Config.PULL_FROM_CHEST()) {
-                    val allowedTools = arrayListOf<Material>()
-                    getType().getConfig().getStringList("tool.material").fastFor {
-                        allowedTools.add(Material.matchMaterial(it) ?: return@fastFor)
-                    }
+                    val item = pullFromChest()
+                    linkedInventory?.addItem(tool)
+                    setTool(item)
 
-                    linkedInventory?.contents?.fastFor {
-                        if (it == null || it.type !in allowedTools) return@fastFor
-
-                        setTool(it)
-                        linkedInventory?.remove(it)
+                    if (!tool.type.isAir && notDurable.contains(tool.type)) {
                         return
                     }
-                    setTool(ItemStack(Material.AIR))
+
+                    if (!item.type.isAir && (item.itemMeta as? Damageable
+                            ?: return).damage + 1 > item.type.maxDurability
+                    ) {
+                        return
+                    }
                 } else {
                     setTool(ItemStack(Material.AIR))
-                }
-            } else if (Config.PULL_FROM_CHEST()) {
-                val allowedTools = arrayListOf<Material>()
-                getType().getConfig().getStringList("tool.material").fastFor {
-                    allowedTools.add(Material.matchMaterial(it) ?: return@fastFor)
-                }
-
-                linkedInventory?.contents?.fastFor {
-                    if (it == null || it.type !in allowedTools) return@fastFor
-
-                    linkedInventory?.addItem(getTool())
-                    setTool(it)
-                    linkedInventory?.remove(it)
                     return
                 }
+            } else {
+                if (Config.PULL_FROM_CHEST()) {
+                    val item = pullFromChest()
+                    linkedInventory?.addItem(tool)
+                    setTool(item)
+
+                    if (!tool.type.isAir && notDurable.contains(tool.type)) {
+                        return
+                    }
+
+                    if (!item.type.isAir && (item.itemMeta as? Damageable
+                            ?: return).damage + 1 > item.type.maxDurability
+                    ) {
+                        return
+                    }
+                }
+
+                return
             }
-        } else {
-            meta.damage += amount
-            tool?.itemMeta = meta
-            updateInventories()
         }
     }
 
     override fun canUseTool(): Boolean {
-        if (notDurable.contains(tool?.type) && !(tool?.type?.isAir ?: return false)) {
+        val tool = tool ?: return false
+        val toolMeta = toolMeta as? Damageable ?: return false
+
+        if (!tool.type.isAir && unbreakable) {
             return true
         }
 
-        val meta = toolMeta ?: return false
-
-        if (!Config.USE_DURABILITY() && meta is Damageable) {
+        if (!Config.USE_DURABILITY()) {
             return true
         }
 
-        if (meta is Damageable) {
-            if ((tool?.type?.maxDurability ?: return false) <= meta.damage + 1) {
-                if (Config.CAN_BREAK_TOOLS()) {
-                    if (Config.PULL_FROM_CHEST()) {
-                        val allowedTools = arrayListOf<Material>()
-                        getType().getConfig().getStringList("tool.material").fastFor {
-                            allowedTools.add(Material.matchMaterial(it) ?: return@fastFor)
-                        }
+        if (toolMeta.isUnbreakable) {
+            return true
+        }
 
-                        linkedInventory?.contents?.fastFor {
-                            if (it == null || it.type !in allowedTools) return@fastFor
+        val maxDurability = tool.type.maxDurability
+        val damage = toolMeta.damage
+        val remaining = maxDurability - damage
 
-                            setTool(it)
-                            linkedInventory?.remove(it)
-                            return true
-                        }
-                        setTool(ItemStack(Material.AIR))
-                    } else {
-                        setTool(ItemStack(Material.AIR))
-                    }
-                } else if (Config.PULL_FROM_CHEST()) {
-                    val allowedTools = arrayListOf<Material>()
-                    getType().getConfig().getStringList("tool.material").fastFor {
-                        allowedTools.add(Material.matchMaterial(it) ?: return@fastFor)
-                    }
+        if (remaining > 1) {
+            // We can damage the tool
+            return true
+        } else {
+            // Tool is breaking
+            if (Config.CAN_BREAK_TOOLS()) {
+                if (Config.PULL_FROM_CHEST()) {
+                    val item = pullFromChest()
+                    linkedInventory?.addItem(tool)
+                    setTool(item)
 
-                    linkedInventory?.contents?.fastFor {
-                        if (it == null || it.type !in allowedTools) return@fastFor
-
-                        linkedInventory?.addItem(getTool())
-                        setTool(it)
-                        linkedInventory?.remove(it)
+                    if (!tool.type.isAir && notDurable.contains(tool.type)) {
                         return true
                     }
+
+                    if (!item.type.isAir && (item.itemMeta as? Damageable
+                            ?: return false).damage + 1 > item.type.maxDurability
+                    ) {
+                        return canUseTool()
+                    }
+                } else {
+                    setTool(ItemStack(Material.AIR))
+                    return false
                 }
-                return false
             } else {
-                return true
+                if (Config.PULL_FROM_CHEST()) {
+                    val item = pullFromChest()
+                    linkedInventory?.addItem(tool)
+                    setTool(item)
+
+                    if (!tool.type.isAir && notDurable.contains(tool.type)) {
+                        return true
+                    }
+
+                    if (!item.type.isAir && (item.itemMeta as? Damageable
+                            ?: return false).damage + 1 > item.type.maxDurability
+                    ) {
+                        return canUseTool()
+                    }
+                }
+
+                return false
             }
         }
 
-        return true
+        return false
+    }
+
+    private fun pullFromChest(): ItemStack {
+        val allowedTools = arrayListOf<Material>()
+        getType().getConfig().getStringList("tool.material").fastFor {
+            allowedTools.add(Material.matchMaterial(it) ?: return@fastFor)
+        }
+
+        linkedInventory?.contents?.fastFor {
+            if (it == null || it.type !in allowedTools) return@fastFor
+
+            linkedInventory?.remove(it)
+            return it
+        }
+
+        return ItemStack(Material.AIR)
     }
 
     override fun isOwnerOnline(): Boolean {

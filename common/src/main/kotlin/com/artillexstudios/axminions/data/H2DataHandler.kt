@@ -2,6 +2,7 @@ package com.artillexstudios.axminions.data
 
 import com.artillexstudios.axapi.serializers.Serializers
 import com.artillexstudios.axminions.AxMinionsPlugin
+import com.artillexstudios.axminions.api.config.Config
 import com.artillexstudios.axminions.api.data.DataHandler
 import com.artillexstudios.axminions.api.minions.Direction
 import com.artillexstudios.axminions.api.minions.miniontype.MinionType
@@ -40,7 +41,7 @@ class H2DataHandler : DataHandler {
         }
 
         dataSource.connection.use { connection ->
-            connection.prepareStatement("CREATE TABLE IF NOT EXISTS `axminions_users`(`uuid` UUID PRIMARY KEY, `name` VARCHAR(16));")
+            connection.prepareStatement("CREATE TABLE IF NOT EXISTS `axminions_users`(`uuid` UUID PRIMARY KEY, `name` VARCHAR(16), `island_slots` INT);")
                 .use {
                     it.executeUpdate()
                 }
@@ -71,6 +72,21 @@ class H2DataHandler : DataHandler {
         dataSource.connection.use { connection ->
             connection.prepareStatement("ALTER TABLE `axminions_minions` ADD COLUMN IF NOT EXISTS `charge` BIGINT DEFAULT(0);").use {
                 it.executeUpdate()
+            }
+        }
+
+        dataSource.connection.use { connection ->
+            connection.prepareStatement("ALTER TABLE `axminions_users` ADD COLUMN IF NOT EXISTS `island_slots` INT DEFAULT(0);").use {
+                it.executeUpdate()
+            }
+        }
+
+        if (Config.ISLAND_LIMIT() > 0) {
+            dataSource.connection.use { connection ->
+                connection.prepareStatement("CREATE TABLE IF NOT EXISTS `axminions_island_counter`(`island` VARCHAR(256) PRIMARY KEY, `placed` INT);")
+                    .use {
+                        it.executeUpdate()
+                    }
             }
         }
     }
@@ -241,13 +257,16 @@ class H2DataHandler : DataHandler {
             linkedChestId = getLocationID(minion.getLinkedChest()!!)
         }
 
+        val extra = getExtraSlots(minion.getOwnerUUID())
+
         dataSource.connection.use { connection ->       
             connection.prepareStatement(
-                "MERGE INTO `axminions_users`(`uuid`, `name`) KEY(`uuid`) VALUES (?,?);",
+                "MERGE INTO `axminions_users`(`uuid`, `name`, `island_slots`) KEY(`uuid`) VALUES (?,?,?);",
                 Statement.RETURN_GENERATED_KEYS
             ).use { statement ->
                 statement.setObject(1, minion.getOwnerUUID())
                 statement.setString(2, minion.getOwner()?.name ?: "---")
+                statement.setInt(3, extra)
                 statement.executeUpdate()
 
                 statement.generatedKeys.use { resultSet ->
@@ -362,6 +381,90 @@ class H2DataHandler : DataHandler {
         }
 
         return false
+    }
+
+    override fun islandPlace(island: String) {
+        dataSource.connection.use { connection ->
+            val placed = getIsland(island) + 1
+            connection.prepareStatement("MERGE INTO `axminions_island_counter`(`placed`, `island`) KEY(`island`) VALUES(?,?);").use { statement ->
+                statement.setInt(1, placed)
+                statement.setString(2, island)
+                statement.executeUpdate()
+            }
+        }
+    }
+
+    override fun islandReset(island: String) {
+        dataSource.connection.use { connection ->
+            connection.prepareStatement("UPDATE `axminions_island_counter` SET `placed` = 0 WHERE `island` = ?;").use { statement ->
+                statement.setString(1, island)
+                statement.executeUpdate()
+            }
+        }
+    }
+
+    override fun islandBreak(island: String) {
+        dataSource.connection.use { connection ->
+            connection.prepareStatement("UPDATE `axminions_island_counter` SET `placed` = `placed` - 1 WHERE `island` = ?;").use { statement ->
+                statement.setString(1, island)
+                statement.executeUpdate()
+            }
+        }
+    }
+
+    override fun getIsland(island: String): Int {
+        dataSource.connection.use { connection ->
+            connection.prepareStatement("SELECT `placed` FROM `axminions_island_counter` WHERE `island` = ?;").use { statement ->
+                statement.setString(1, island)
+                statement.executeQuery().use { resultSet ->
+                    if (resultSet.next()) {
+                        return resultSet.getInt("placed")
+                    }
+                }
+            }
+        }
+
+        return 0
+    }
+
+    override fun addUser(uuid: UUID, name: String) {
+        try {
+            dataSource.connection.use { connection ->
+                connection.prepareStatement("INSERT INTO `axminions_users`(`uuid`, `name`, `island_slots`) VALUES (?,?,?);").use { statement ->
+                    statement.setObject(1, uuid)
+                    statement.setString(2, name)
+                    statement.setInt(3, 0)
+                    statement.executeUpdate()
+                }
+            }
+        } catch (exception: Exception) {
+
+        }
+    }
+
+    override fun addExtraSlot(user: UUID, amount: Int) {
+        dataSource.connection.use { connection ->
+            connection.prepareStatement("UPDATE `axminions_users` SET `island_slots` = `island_slots` + ? WHERE `uuid` = ?;").use { statement ->
+                statement.setInt(1, amount)
+                statement.setObject(2, user)
+                statement.executeUpdate()
+            }
+        }
+    }
+
+    override fun getExtraSlots(user: UUID): Int {
+        dataSource.connection.use { connection ->
+            connection.prepareStatement("SELECT `island_slots` FROM `axminions_users` WHERE `uuid` = ?;").use { statement ->
+                statement.setObject(1, user)
+                statement.executeQuery().use { resultSet ->
+                    if (resultSet.next()) {
+                        return resultSet.getInt("island_slots")
+                    }
+
+                    return 0
+                }
+            }
+        }
     }
 
     override fun disable() {

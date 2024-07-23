@@ -30,5 +30,19 @@ interface DataHandler {
 
     fun isMinion(location: Location): Boolean
 
+    fun islandPlace(island: String)
+
+    fun islandBreak(island: String)
+
+    fun islandReset(island: String)
+
+    fun getIsland(island: String): Int
+
+    fun addUser(uuid: UUID, name: String)
+
+    fun addExtraSlot(user: UUID, amount: Int)
+
+    fun getExtraSlots(user: UUID): Int
+
     fun disable()
 }

@@ -1,9 +1,14 @@
 package com.artillexstudios.axminions.api.integrations.types
 
 import com.artillexstudios.axminions.api.integrations.Integration
-import org.bukkit.entity.Player
+import org.bukkit.Location
+import org.bukkit.block.Block
 
 interface IslandIntegration : Integration {
 
-    fun getIslandPlaced(player: Player): Int
+    fun getIslandAt(location: Location): String
+
+    fun getExtra(location: Location): Int
+
+    fun handleBlockBreak(block: Block)
 }

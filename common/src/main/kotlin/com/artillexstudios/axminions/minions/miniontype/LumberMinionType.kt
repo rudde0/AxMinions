@@ -12,6 +12,7 @@ import kotlin.math.roundToInt
 import org.bukkit.Material
 import org.bukkit.block.BlockFace
 import org.bukkit.enchantments.Enchantment
+import org.bukkit.inventory.DoubleChestInventory
 import org.bukkit.inventory.ItemStack
 
 class LumberMinionType : MinionType("lumber", AxMinionsPlugin.INSTANCE.getResource("minions/lumber.yml")!!) {
@@ -35,6 +36,14 @@ class LumberMinionType : MinionType("lumber", AxMinionsPlugin.INSTANCE.getResour
 
         if (minion.getLinkedChest() != null) {
             val type = minion.getLinkedChest()!!.block.type
+            if (type == Material.CHEST && minion.getLinkedInventory() !is DoubleChestInventory && hasChestOnSide(minion.getLinkedChest()!!.block)) {
+                minion.setLinkedChest(minion.getLinkedChest())
+            }
+
+            if (type == Material.CHEST && minion.getLinkedInventory() is DoubleChestInventory && !hasChestOnSide(minion.getLinkedChest()!!.block)) {
+                minion.setLinkedChest(minion.getLinkedChest())
+            }
+
             if (type != Material.CHEST && type != Material.TRAPPED_CHEST && type != Material.BARREL) {
                 minion.setLinkedChest(null)
             }
@@ -77,32 +86,32 @@ class LumberMinionType : MinionType("lumber", AxMinionsPlugin.INSTANCE.getResour
     }
 
     private fun getSaplingType(material: Material): Material {
-        return when (material) {
-            Material.DARK_OAK_LOG -> {
+        return when (material.name) {
+            "DARK_OAK_LOG" -> {
                 Material.DARK_OAK_SAPLING
             }
 
-            Material.BIRCH_LOG -> {
+            "BIRCH_LOG" -> {
                 Material.BIRCH_SAPLING
             }
 
-            Material.ACACIA_LOG -> {
+            "ACACIA_LOG" -> {
                 Material.ACACIA_SAPLING
             }
 
-            Material.JUNGLE_LOG -> {
+            "JUNGLE_LOG" -> {
                 Material.JUNGLE_SAPLING
             }
 
-            Material.SPRUCE_LOG -> {
+            "SPRUCE_LOG" -> {
                 Material.SPRUCE_SAPLING
             }
 
-            Material.MANGROVE_LOG -> {
+            "MANGROVE_LOG" -> {
                 Material.MANGROVE_PROPAGULE
             }
 
-            Material.CHERRY_LOG -> {
+            "CHERRY_LOG" -> {
                 Material.CHERRY_SAPLING
             }
 

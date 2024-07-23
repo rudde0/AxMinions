@@ -1,19 +1,23 @@
 package com.artillexstudios.axminions.listeners
 
+import com.artillexstudios.axapi.utils.ItemBuilder
 import com.artillexstudios.axapi.utils.StringUtils
 import com.artillexstudios.axminions.AxMinionsPlugin
 import com.artillexstudios.axminions.api.AxMinionsAPI
 import com.artillexstudios.axminions.api.config.Config
 import com.artillexstudios.axminions.api.config.Messages
+import com.artillexstudios.axminions.api.events.MinionToolEvent
 import com.artillexstudios.axminions.api.minions.Direction
 import com.artillexstudios.axminions.api.minions.Minion
 import com.artillexstudios.axminions.api.minions.miniontype.MinionTypes
 import com.artillexstudios.axminions.api.utils.CoolDown
 import com.artillexstudios.axminions.api.utils.Keys
 import com.artillexstudios.axminions.api.utils.fastFor
+import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver
 import java.util.Locale
 import net.md_5.bungee.api.ChatMessageType
 import net.md_5.bungee.api.chat.TextComponent
+import org.bukkit.Bukkit
 import org.bukkit.Material
 import org.bukkit.Sound
 import org.bukkit.entity.Player
@@ -66,15 +70,19 @@ class MinionInventoryListener : Listener {
                 return
             }
 
+            val minionToolEvent = MinionToolEvent(minion, player, event.currentItem!!.clone(), minion.getTool()!!.clone())
+            Bukkit.getPluginManager().callEvent(minionToolEvent)
+            if (minionToolEvent.isCancelled) return
+
             if (minion.getTool()?.type != Material.AIR) {
-                val current = event.currentItem!!.clone()
-                val tool = minion.getTool()?.clone()
+                val current = minionToolEvent.newTool
+                val tool = minionToolEvent.oldTool
                 minion.setTool(current)
                 minion.updateArmour()
                 event.currentItem!!.amount = 0
                 event.clickedInventory!!.addItem(tool)
             } else {
-                minion.setTool(event.currentItem!!)
+                minion.setTool(minionToolEvent.newTool)
                 event.currentItem!!.amount = 0
             }
 
@@ -88,15 +96,19 @@ class MinionInventoryListener : Listener {
                 player.sendMessage(StringUtils.formatToString(Messages.PREFIX() + Messages.ERROR_INVENTORY_FULL()))
                 return
             }
-
             val tool = minion.getTool()?.clone() ?: return
+
+            val minionToolEvent = MinionToolEvent(minion, player, ItemStack(Material.AIR), tool)
+            Bukkit.getPluginManager().callEvent(minionToolEvent)
+            if (minionToolEvent.isCancelled) return
+
             minion.setTool(ItemStack(Material.AIR))
             minion.updateArmour()
-            val toolMeta = tool.itemMeta ?: return
+            val toolMeta = minionToolEvent.oldTool.itemMeta ?: return
             toolMeta.persistentDataContainer.remove(Keys.GUI)
-            tool.setItemMeta(toolMeta)
+            minionToolEvent.oldTool.setItemMeta(toolMeta)
 
-            player.inventory.addItem(tool)
+            player.inventory.addItem(minionToolEvent.oldTool)
             minion.updateInventories()
             return
         }
@@ -186,13 +198,6 @@ class MinionInventoryListener : Listener {
             }
 
             "charge" -> {
-                if ((AxMinionsPlugin.integrations.getEconomyIntegration()?.getBalance(player)
-                        ?: return) < Config.CHARGE_PRICE()
-                ) {
-                    player.sendMessage(StringUtils.formatToString(Messages.PREFIX() + Messages.CHARGE_FAIL()))
-                    return
-                }
-
                 val chargeSeconds = (minion.getCharge() - System.currentTimeMillis()) / 1000
 
                 if ((Config.MAX_CHARGE() * 60) - chargeSeconds < Config.MINIMUM_CHARGE()) {
@@ -200,21 +205,49 @@ class MinionInventoryListener : Listener {
                     return
                 }
 
-                AxMinionsPlugin.integrations.getEconomyIntegration()?.let {
-                    minion.getOwner()?.let { player ->
-                        it.takeBalance(player, Config.CHARGE_PRICE())
+                var chargeAmount = Config.CHARGE_AMOUNT()
+                var itemCharge = false
+                val section = Config.CHARGE_ITEMS()
+
+                for (key in section.keys) {
+                    val item = ItemBuilder(section.getSection(key.toString())).get()
+                    if (player.inventory.containsAtLeast(item, 1)) {
+                        itemCharge = true
+                        chargeAmount = section.getSection(key.toString()).getInt("charge")
+                        player.inventory.removeItem(item)
+                        break
                     }
                 }
 
-                if (chargeSeconds + Config.CHARGE_AMOUNT() > Config.MAX_CHARGE() * 60L) {
+                if (Config.CHARGE_PRICE() <= 0 && !itemCharge) {
+                    player.sendMessage(StringUtils.formatToString(Messages.PREFIX() + Messages.CHARGE_FAIL()))
+                    return
+                }
+
+                if (!itemCharge) {
+                    if ((AxMinionsPlugin.integrations.getEconomyIntegration()?.getBalance(player)
+                            ?: return) < Config.CHARGE_PRICE()
+                    ) {
+                        player.sendMessage(StringUtils.formatToString(Messages.PREFIX() + Messages.CHARGE_FAIL()))
+                        return
+                    }
+
+                    AxMinionsPlugin.integrations.getEconomyIntegration()?.let {
+                        minion.getOwner()?.let { player ->
+                            it.takeBalance(player, Config.CHARGE_PRICE())
+                        }
+                    }
+                }
+
+                if (chargeSeconds + chargeAmount > Config.MAX_CHARGE() * 60L) {
                     minion.setCharge(System.currentTimeMillis() + Config.MAX_CHARGE() * 60L * 1000L)
                     return
                 }
 
                 if (minion.getCharge() < System.currentTimeMillis()) {
-                    minion.setCharge(System.currentTimeMillis() + Config.CHARGE_AMOUNT() * 1000)
+                    minion.setCharge(System.currentTimeMillis() + chargeAmount * 1000)
                 } else {
-                    minion.setCharge(minion.getCharge() + Config.CHARGE_AMOUNT() * 1000)
+                    minion.setCharge(minion.getCharge() + chargeAmount * 1000)
                 }
 
                 if (Messages.CHARGE().isNotBlank()) {

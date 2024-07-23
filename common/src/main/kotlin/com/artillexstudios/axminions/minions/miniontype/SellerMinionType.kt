@@ -8,6 +8,7 @@ import com.artillexstudios.axminions.minions.MinionTicker
 import kotlin.math.roundToInt
 import org.bukkit.Material
 import org.bukkit.enchantments.Enchantment
+import org.bukkit.inventory.DoubleChestInventory
 
 class SellerMinionType : MinionType("seller", AxMinionsPlugin.INSTANCE.getResource("minions/seller.yml")!!) {
 
@@ -34,6 +35,14 @@ class SellerMinionType : MinionType("seller", AxMinionsPlugin.INSTANCE.getResour
         }
 
         val type = minion.getLinkedChest()!!.block.type
+        if (type == Material.CHEST && minion.getLinkedInventory() !is DoubleChestInventory && hasChestOnSide(minion.getLinkedChest()!!.block)) {
+            minion.setLinkedChest(minion.getLinkedChest())
+        }
+
+        if (type == Material.CHEST && minion.getLinkedInventory() is DoubleChestInventory && !hasChestOnSide(minion.getLinkedChest()!!.block)) {
+            minion.setLinkedChest(minion.getLinkedChest())
+        }
+
         if (type != Material.CHEST && type != Material.TRAPPED_CHEST && type != Material.BARREL) {
             Warnings.NO_CONTAINER.display(minion)
             minion.setLinkedChest(null)
@@ -79,7 +88,7 @@ class SellerMinionType : MinionType("seller", AxMinionsPlugin.INSTANCE.getResour
                 continue
             }
 
-            minion.setActions(minion.getActionAmount() + 1)
+            minion.setActions(minion.getActionAmount() + it.amount)
             minion.damageTool()
             minion.setStorage(minion.getStorage() + price)
             it.amount = 0

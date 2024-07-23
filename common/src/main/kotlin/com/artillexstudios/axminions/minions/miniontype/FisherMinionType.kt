@@ -1,6 +1,7 @@
 package com.artillexstudios.axminions.minions.miniontype
 
 import com.artillexstudios.axminions.AxMinionsPlugin
+import com.artillexstudios.axminions.api.events.PreFisherMinionFishEvent
 import com.artillexstudios.axminions.api.minions.Minion
 import com.artillexstudios.axminions.api.minions.miniontype.MinionType
 import com.artillexstudios.axminions.api.utils.LocationUtils
@@ -8,11 +9,13 @@ import com.artillexstudios.axminions.api.utils.fastFor
 import com.artillexstudios.axminions.api.warnings.Warnings
 import com.artillexstudios.axminions.minions.MinionTicker
 import com.artillexstudios.axminions.nms.NMSHandler
+import org.bukkit.Bukkit
 import java.util.concurrent.ThreadLocalRandom
 import kotlin.math.roundToInt
 import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.enchantments.Enchantment
+import org.bukkit.inventory.DoubleChestInventory
 
 class FisherMinionType : MinionType("fisher", AxMinionsPlugin.INSTANCE.getResource("minions/fisher.yml")!!) {
 
@@ -35,6 +38,14 @@ class FisherMinionType : MinionType("fisher", AxMinionsPlugin.INSTANCE.getResour
 
         if (minion.getLinkedChest() != null) {
             val type = minion.getLinkedChest()!!.block.type
+            if (type == Material.CHEST && minion.getLinkedInventory() !is DoubleChestInventory && hasChestOnSide(minion.getLinkedChest()!!.block)) {
+                minion.setLinkedChest(minion.getLinkedChest())
+            }
+
+            if (type == Material.CHEST && minion.getLinkedInventory() is DoubleChestInventory && !hasChestOnSide(minion.getLinkedChest()!!.block)) {
+                minion.setLinkedChest(minion.getLinkedChest())
+            }
+
             if (type != Material.CHEST && type != Material.TRAPPED_CHEST && type != Material.BARREL) {
                 minion.setLinkedChest(null)
             }
@@ -72,7 +83,16 @@ class FisherMinionType : MinionType("fisher", AxMinionsPlugin.INSTANCE.getResour
 
         Warnings.remove(minion, Warnings.NO_TOOL)
 
-        val loot = NMSHandler.get().generateRandomFishingLoot(minion, waterLocation!!)
+        var loot = NMSHandler.get().generateRandomFishingLoot(minion, waterLocation!!)
+
+        val preFishEvent = PreFisherMinionFishEvent(minion, loot)
+        Bukkit.getPluginManager().callEvent(preFishEvent)
+        if (preFishEvent.isCancelled) {
+            return
+        }
+        if (preFishEvent.item != loot) {
+            loot = preFishEvent.item
+        }
         val xp = ThreadLocalRandom.current().nextInt(6) + 1
 
         minion.addToContainerOrDrop(loot)
